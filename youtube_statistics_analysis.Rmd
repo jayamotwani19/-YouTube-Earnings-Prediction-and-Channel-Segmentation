@@ -1,0 +1,1468 @@
+---
+title: "Project 2_CDA"
+author: "Jaya MOTWANI(23990486), Kose SAJU(23680585)"
+date: "2023-10-15"
+output: html_document
+---
+
+## Video Link : "https://youtu.be/0OtNxiDbkZU"
+
+## Task Distribution :
+ Jaya Motwani (50%): Data Cleaning, Feature Selection, Clustering, Evaluation, Shiny App
+ 
+ Kose Saju (50%): Feature Selection, Single and Multivariate Classification, Evaluation, Shiny App
+
+
+# Introduction
+
+The data set provided analyzed here is "Global Youtube Statistics. csv" provided at CITS4009 Unit LMS Webpage.The provided data set appears to contain information related to popular YouTube channels, with several attributes and metrics associated with each channel.  
+
+The dataset seems to include details about various YouTube channels, such as their rankings, subscriber counts, video views, content categories, upload statistics, and earnings. Additionally, it contains information about the countries of origin for these channels, including abbreviations and certain demographic and economic indicators for those countries.
+
+The dataset might be useful for conducting analyses related to YouTube channel popularity, content categories, and the financial aspects of YouTube channels. It could also serve as a valuable resource for exploring trends and relationships between these variables.
+
+There is another dataset representing earnings against the social economic status of the country (e.g. normalised using GDP, or GDP per capita) which has been downloaded from Word Bank Webpage and is available at: https://data.worldbank.org/indicator/NY.GDP.PCAP.CD
+
+Global Youtube Statistics dataset has 28 features ad 995 observations, where as World Bank GDP dataset has 67 features and 266 observations.
+
+In this project, our aim is to decide a target variable out of the merged dataset from Youtube Statistics and World Bank GDP, which is suitable for a classification task and formulate it as a binary classification problem.
+
+Another technique to be used is Clustering, for discovering hidden patterns in the dataset and visualize the clustering results.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+```{r Libraries}
+library("knitr")
+library("dplyr")
+library("ggplot2")
+library("gridExtra")
+library("tidyverse")
+library("reshape2")
+library("Hmisc")
+library("vtreat")
+library("corrplot")
+library('ROCR')
+library("ROCit")
+library("pander")
+library("rpart")
+library("rpart.plot")
+library("caret")
+library("class")
+library("cluster")    
+library("factoextra")
+library("cluster")    
+library("gridExtra")
+library("fpc")
+library("klaR")
+library("devtools")
+install_github("ramhiser/clusteval")
+library("clusteval")
+library("MASS")
+library("clustMixType")
+```
+
+## Part 1 : Data Preparation
+
+
+```{r Reading dataframes, include=FALSE}
+
+#Reading data from csv files
+
+u_tube <- read.csv("Global YouTube Statistics.csv")
+wrld_bnk <- read.csv("WBD.csv")
+```
+
+#### Finding mismatching Country names in both the data frames
+
+```{r Unique Country values, include=FALSE}
+
+org <- unique(u_tube$Country)
+new <- unique(wrld_bnk$Country.Name)
+
+setdiff(org,new)
+
+# Found 5 countries that doesn't match
+```
+
+As we can see that there are five countries in World Bank data frame whose names do not match with the ones in the Global Youtube data frame, so we will rename these countries in World Bank data frame.
+
+```{r Renaming mismatching Country Names, include=FALSE}
+
+wrld_bnk <- wrld_bnk %>%
+  rename(Country = Country.Name) %>%
+  mutate(Country = case_when(
+    Country== "Egypt, Arab Rep." ~ "Egypt",
+    Country== "Korea, Rep." ~ "South Korea",
+    Country== "Turkiye" ~ "Turkey",
+    Country== "Venezuela, RB" ~ "Venezuela",
+    Country== "Russian Federation" ~ "Russia",
+    TRUE ~ as.character(Country)
+  )
+)
+
+```
+
+Now we will calculate Aggregated GDP in World Bank data frame for all the years from 1960 up to 2022 and add this column at the end.
+
+
+```{r Aggregated GDP}
+
+start_column <- which(names(wrld_bnk) == "X1960")
+end_column <- which(names(wrld_bnk) == "X2022")
+
+wrld_bnk <- wrld_bnk %>%
+  mutate(Aggregated_GDP = rowMeans(wrld_bnk[, start_column:end_column], na.rm = TRUE))
+
+wrld_sub <- wrld_bnk[, c("Country", "Aggregated_GDP")]  #subset of original world bank data
+            
+```
+
+Now we will merge the two data frames using Country as a common column and it is a left outer join so that all the observations from Global Youtube dataset are included. 
+
+
+```{r Merge, include=FALSE}
+mergd_df <- merge(u_tube, wrld_sub, all.x=TRUE)    #left outer join
+```
+
+Now we can see that there are 4 columns related to earnings in the merged_df, out of which we are choosing to only keep one column which represents an average of yearly earnings. We are just trying to keep columns relevant to our classification task and get rid of all the unnecessary columns/duplicated columns/ highly correlated columns.
+
+We are also removing creation_date having year as "1970", since Youtube came into existence in 2005 only, so this is a invalid date for a youtube channel, hence we are converting it to NA.
+
+Then we are creating a new column channel_lifetime to represent the age of the channel in number of days from the creation date till 15 Oct 2023.
+
+Thereafter we have only chosen relevant columns for our classification task and dropped all other irrelevant columns having unique values and duplicated information.
+
+```{r Cal channel_lifetime and Avg Earnings}
+
+# Calculating average yearly earning for each youtube channel
+
+mergd_df <- mergd_df %>%
+              mutate(avg_earnings = rowMeans(mergd_df[, c("lowest_yearly_earnings", "highest_yearly_earnings")]))
+
+#Combining date, month and year columns into a single column "creation_date"
+mergd_df <- mergd_df %>%mutate(creation_date = paste(created_date, created_month , created_year, sep = "/"))
+                      mergd_df$creation_date <- as.Date(mergd_df$creation_date, "%d/%b/%Y")
+
+# Removing invalid creation_date
+mergd_df$creation_date[format(mergd_df$creation_date, "%Y") == "1970"] <- NA
+
+# Calculating channel_lifetime
+mergd_df$channel_lifetime <- julian(Sys.Date()) - julian(mergd_df$creation_date)
+
+# Selecting relevant columns 
+myvars <- c("Country", "subscribers", "video.views", "uploads", "channel_type", "video_views_for_the_last_30_days", "subscribers_for_last_30_days", "Gross.tertiary.education.enrollment....", "Population", "Unemployment.rate", "Urban_population", "Aggregated_GDP", "avg_earnings", "channel_lifetime")
+
+unclean_df <- mergd_df[myvars]
+```
+
+Now upon doing a bit of exploratory analysis of avg_earnings column of the data frame, we can observe that there are 80 channels which have zero earnings and there is one outlier having a value of "8,68,00000". These figures are affecting the value of mean avg_earnings, based on which we would like to split our earnings into low and high binary categories. So here we are removing these observations just to recalculate the mean for our earnings, but in our classification task we are using full dataset with 995 observations.
+
+```{r Zeros and Outlier}
+
+# Removing an extreme outlier 
+outlier_value <- 86800000  
+
+# Filtering the dataset dropping specific outlier value and zero values
+out_removed <- unclean_df %>%
+  filter(avg_earnings != outlier_value, avg_earnings != 0)
+
+mean_avg_earnings <- mean(out_removed$avg_earnings) # calculating mean for binary classification of target variable
+
+mean_avg_earnings
+```
+
+### Target variable for Classification task
+
+So we have chosen avg_earning (yearly) as our target variable for the classification, and here we are converting it to binary classes, having values of '0s' representing "low income" and values of '1s' representing "high income" for a youtube channel, and this is being added in the data frame as a new column "earnings_level". Initially, we have chosen mean for finding the split point based on some previous scientific experiments and studies, but then we realized that since this is an imbalanced dataset, choosing mean as split point would not be the correct way of deciding low and high earnings youtube channel. So we have done some research on it and we found that an average youtube content creater makes around $100,000 per year, provided they hit the benchmark of one million subscribers and views. So considering that we have decided the split point between low and high earnings to be $100,000.  
+
+```{r earnings_level}
+
+# Creating target variable "earnings_level"
+unclean_df$earnings_level <- ifelse((unclean_df$avg_earnings) > 100000, 1, 0)
+```
+
+
+```{r}
+# Some housekeeping
+
+rm(mergd_df, new, org, wrld_bnk, wrld_sub, u_tube)
+```
+
+### Handling "nan" and "NaN"
+
+So we have heaps of "nan" and "NaN" in our data frame in channel_type and Country columns, therfore we areconverting them to "Unknowns" as a new category.
+
+```{r all to NAs}
+# treating for nan characters 
+
+clean_data <- function(unclean_df) {
+  clean_df <- unclean_df %>%
+    mutate(
+      across(where(is.numeric), ~ ifelse(is.nan(.), NA, .)),
+      across(where(is.character), ~ ifelse(. %in% c("NaN", "nan"), NA, .)),
+      channel_type = ifelse(is.na(channel_type), "Unknown", channel_type),
+      Country = ifelse(is.na(Country), "Unknown", Country)
+    )
+  return(clean_df)
+}
+
+nan_treated <- clean_data(unclean_df)
+```
+
+### Handling Zeros
+So we have 3 columns with multiple number of zeros, such as "video.views","uploads", "avg_earnings". So here we are just calculating the number of zeros in each of these variables.
+
+```{r zero checker function}
+# Checking for number of zero values
+
+count_zeros <- function(newdata) {
+  zero_count <- sapply(newdata, function(x) sum(x == 0, na.rm = TRUE))
+  
+  return(zero_count)
+}
+
+zero_vars <- c("video.views","uploads", "avg_earnings")
+print(count_zeros(nan_treated[,zero_vars]))
+
+```
+### Transforming Zeros
+
+Now we are transforming zeros to ones to avoid having -Inf values while we transform our variables on logrithmic scalelater on.
+
+```{r zeros to one}
+# Converting zeros to ones
+
+rem_zero <- function(data, zero_vars) {
+  treated_data <- data %>%
+    mutate_at(vars(all_of(zero_vars)), ~ ifelse(. <= 0, . + 1, .))
+  
+  return(treated_data)
+}
+zero_treated <- rem_zero(nan_treated, zero_vars)
+print(count_zeros(rem_zero(nan_treated, zero_vars)))
+summary(zero_treated)
+```
+### Log Transformation of skewed variables
+
+So as we can observe that many variables like "subscribers", "video.views", "uploads", "video_views_for_the_last_30_days", "subscribers_for_last_30_days" and "Population" are heavily skewed and might affect the classification task, so we are performing log transformation to align them with a normal scale.
+
+```{r Log transformation}
+# Log transformation of skewed variables
+
+log_transform <- function(data, variables) {
+ 
+  for (var in variables) {
+    data[[var]] <- log(data[[var]])
+  }
+  
+  return(data)
+}
+
+skewed_vars <- c("subscribers", "video.views", "uploads", "video_views_for_the_last_30_days", "subscribers_for_last_30_days", "Population")
+
+skew_treated <- log_transform(zero_treated, skewed_vars)
+```
+
+Now we are just count of rows having more than 10% NAs, as this number is 138, which is 13.87% of our data points so we cant drop them.
+
+```{r row NA checker}
+# Number of rows with more than 10% NAs
+
+sum(rowSums(is.na(skew_treated)) / ncol(skew_treated) > 0.1)
+```
+
+```{r row NA filter function}
+# Function to check and filter rows according to number of NAs present
+
+rowchecker <- function(data, threshold) {
+  # Calculate the NA percentage for each row
+  na_percentages <- rowSums(is.na(data)) / ncol(data) * 100
+
+  # Keep rows where NA percentage is less than or equal to the threshold
+  filtered_data <- data[na_percentages <= threshold, ]
+
+  return(filtered_data)
+}
+```
+
+```{r response class ratio}
+# number of response as 1
+
+sum(skew_treated$earnings_level)
+```
+
+```{r column NA check function}
+# sum of NAs in each column
+
+count_missing <- function(df) {
+  sapply(df, FUN = function(col) sum(is.na(col)) )
+}
+```
+Now we are checking total count of NAs across all the variables in the data frame.
+```{r}
+count_missing(skew_treated)
+```
+### Using V-treat for handling missing values
+
+```{r v treat function}
+# vtreating everything except categorical columns such as "Country", "channel_type", "earnings_level"
+
+v_treater <- function(df, excluded_vars) {
+  col_list <- setdiff(colnames(df), c("Country", "channel_type", "earnings_level"))
+  treatment_plan <- design_missingness_treatment(df, varlist = col_list)
+  training_prepared <- prepare(treatment_plan, df)
+  count_missing(training_prepared)
+  return(training_prepared)
+}
+
+excluded_vars <- c("Country", "channel_type", "earnings_level")
+vtreat_prepared  <- v_treater(skew_treated, excluded_vars)
+vtreat_clustering <- v_treater (zero_treated, excluded_vars)
+count_missing(vtreat_prepared)
+```
+As we can see after the V-treat transformation all the missing values have been imputed across all the columns.
+we have selected suitable subsets of variables for classification as well as clustering task to keep the model simple, easy to execute and interpret.The variables which are dropped are either missing value indicators or redundant.
+
+## Part 2(A) :Feature Selection Techniques
+
+It is very important to apply some feature selection techniques to get rid of duplicated variables before modelling. So the first technique used is Correlation Coefficient Matrix to drop the variables based on correlation with other variables.
+
+## 2.A.1. Correlation Coefficient Matrix [Feature Selection #1]
+
+```{r correlation matrix}
+num_df <- vtreat_prepared[sapply(vtreat_prepared,is.numeric)]
+
+cor_matrix <- cor(num_df, use = "pairwise.complete.obs")
+corrplot(
+  cor_matrix, 
+  method = "circle", 
+  type = "upper",  # Display only the upper triangle of the matrix
+  tl.col = "black",  # Label color
+  tl.srt = 45,       # Label rotation angle
+  addCoef.col = "black",  # Coefficient color
+  tl.cex = 0.5,
+  number.cex = 0.5,
+  diag = FALSE       # Exclude diagonal elements
+)
+```
+ 
+So here we can see that"Gross_tertiary_education_enrollment_"and  "Unemployment_rate" have high degree of correlation with Aggregated_GDP and "Urban_population" has high correlation coefficient with "Population". Hence we are dropping these three variables and all other missingness indicater variables. Also creation_date is similiar to channel_lifetime so we have dropped it as well.And since we already converted avg_earnings to earnings_levels as our target binary variable, we dont require avg_earnings as well.
+ 
+ 
+### Selecting subset of variables based on Correlation Matrix
+ 
+```{r Feature Selection using correlation}
+# Preparing data frame for classification task
+training_prepared <- vtreat_prepared[,!names(vtreat_prepared) %in% c("Gross_tertiary_education_enrollment_", "Unemployment_rate","Urban_population", "subscribers_for_last_30_days_isBAD", "video_views_for_the_last_30_days_isBAD", "Population_isBAD", "Gross_tertiary_education_enrollment_isBAD", "Unemployment_rate_isBAD", "Urban_population_isBAD", "Aggregated_GDP_isBAD", "channel_lifetime_isBAD","avg_earnings", "video_views_isBAD", "GDP_mean_70s_isBAD",
+"GDP_mean_10s_isBAD", "creation_date", "uploads_isBAD")]
+
+# Preparing data frame for clustering task
+vtreat_clustering2 <- vtreat_clustering[,names(vtreat_clustering) %in% c("Country", "channel_type", "subscribers","subscribers_for_last_30_days","video_views","video_views_for_the_last_30_days","uploads", "Population", "Aggregated_GDP", "channel_lifetime", "avg_earnings", "earnings_level")]
+
+vtreat_clustering2$earnings_level <- ifelse((vtreat_clustering2$earnings_level) == 0, "Low", "High")
+
+write.csv(vtreat_clustering2, file = "main_df.csv", row.names = FALSE) #exporting for clustering
+
+```
+
+
+```{r}
+# House keeping
+
+rm(myvars, outlier_value, skewed_vars, zero_vars, num_df, excluded_vars)
+```
+
+Setting the target variable and assigning the majority class as success outcome.
+
+```{r pos}
+# Set the success outcome as the majority class and outcome variable
+
+pos <- "1"
+outcome <- "earnings_level"
+```
+
+### Splitting the data
+
+We start by splitting the cleaned data into Train, Test and Calibration set. A seed value is set to make the results reproducible.
+The Train-Test split is set at a reasonable 90/10. Another 10 percent split is done from the train set to obtain the calibration set which could used for hyper parameter tuning before testing. 
+
+```{r train split function}
+# setting seed and splitting train, test and calibration
+set.seed(729375)
+
+train_splitter <- function(data, split_val){
+  data$index <- runif(dim(data)[1])
+
+  tr_data_all <- subset(data, index <= split_val)[,-which(names(data) == "index")]
+  te_data_df <- subset(data , index > split_val)[,-which(names(data) == "index")]
+
+  # names of columns that are categorical type and numerical type
+  vars <- setdiff(colnames(tr_data_all), c("earnings_level", "index"))
+  catVars <- vars[sapply(tr_data_all[, vars], class) %in%c('factor', 'character')]
+  numericVars <- vars[sapply(tr_data_all[, vars], class) %in%c('numeric', 'integer')]
+
+  # split tr_data_all into a training set and a validation (or calibration) set
+  cal_index <- rbinom(n=dim(tr_data_all)[1], size=1, prob=0.1)>0
+  df_cal <- subset(tr_data_all, cal_index)
+  train_df <- subset(tr_data_all, !cal_index)
+
+  data_frames_list <- list(train_df, te_data_df, df_cal, catVars, numericVars)
+  
+  return(data_frames_list)
+}
+
+result <- train_splitter(training_prepared, 0.9)
+
+train_df <- result[[1]]
+test_df <- result[[2]]
+cal_df <- result[[3]]
+catVars <- result[[4]]
+numericVars <- result[[5]]
+```
+
+# Single Variate Modelling
+
+Train single variable models from all the categorical variables and caluclate predictions
+
+```{r cat single function}
+mkPredC <- function(outCol, varCol, appCol) {
+  pPos <- sum(outCol == pos) / length(outCol)
+  naTab <- table(as.factor(outCol[is.na(varCol)]))
+  pPosWna <- (naTab/sum(naTab))[pos]
+  vTab <- table(as.factor(outCol), varCol)
+  pPosWv <- (vTab[pos, ] + 1.0e-3*pPos) / (colSums(vTab) + 1.0e-3)
+  pred <- pPosWv[appCol]
+  pred[is.na(appCol)] <- pPosWna
+  pred[is.na(pred)] <- pPos
+  pred
+}
+```
+
+```{r cat run}
+for(v in catVars) {
+  pi <- paste('pred', v, sep='')
+  train_df[,pi] <- mkPredC(train_df[,outcome], train_df[,v], train_df[,v])
+  cal_df[,pi] <- mkPredC(train_df[,outcome], train_df[,v], cal_df[,v])
+  test_df[,pi] <- mkPredC(train_df[,outcome], train_df[,v], test_df[,v])
+}
+```
+
+Using the pred value for Country and channel type as respective numerical encoding. This would allow us to plug in the categorical variables into models and functions that can only handle numerical values. Creating in a new data frame with suffix _encod with pred values replacing the original categorical variables. 
+
+```{r}
+cat_encod <- rbind(train_df, cal_df, test_df)
+cat_encod <- cat_encod[, !names(cat_encod) %in% c("Country", "channel_type")]
+```
+
+```{r calcAUC function}
+calcAUC <- function(predcol,outcol) {
+  perf <- performance(prediction(predcol,outcol==pos),'auc')
+  as.numeric(perf@y.values)
+}
+```
+
+Evaluating the AUC values for the categorical variables
+
+```{r cat pred values}
+for(v in catVars) {
+  pi <- paste('pred', v, sep='')
+  aucTrain <- calcAUC(train_df[,pi], train_df[,outcome])
+  if (aucTrain >= 0.55) {
+    aucCal <- calcAUC(cal_df[,pi], cal_df[,outcome])
+    print(sprintf(
+        "%s: trainAUC: %4.3f; calibrationAUC: %4.3f",
+          pi, aucTrain, aucCal))
+    }
+}
+```
+
+Evacuating the AUC values for the same in test data set
+
+```{r}
+# Initialize empty vectors to store results
+Variables <- character(0)
+AUC_Test <- numeric(0)
+
+for (v in catVars) {
+  pi <- paste('pred', v, sep='')
+  aucTrain <- calcAUC(train_df[, pi], train_df[, outcome])
+  
+  if (aucTrain >= 0.55) {
+    aucTest <- calcAUC(test_df[, pi], test_df[, outcome])
+    
+    # Append values to vectors
+    Variables <- c(Variables, v)
+    AUC_Test <- c(AUC_Test, round(aucTest, 3))
+  }
+}
+```
+
+The Country variable seems to be a strong predictive variable with a score of 0.7 in the calibration set
+
+```{r}
+# Double Density plots
+
+fig1 <- ggplot(cal_df) + geom_density(aes(x=predCountry, color=as.factor(earnings_level)))
+fig2 <- ggplot(cal_df) + geom_density(aes(x=predchannel_type, color=as.factor(earnings_level)))
+grid.arrange(fig1, fig2, ncol=2)
+```
+
+We can see clear distillation for predicting 1s as outcome in Country's double density plot. The unbalanced number of 1s in the original data set is therefore favorable for the variable.
+
+```{r}
+# colour_id 1-7 are: black,red,green,blue,cyan,purple,gold
+plot_roc <- function(predcol, outcol, colour_id=2, overlaid=F) {
+  ROCit_obj <- rocit(score=predcol, class=outcol==pos)
+  par(new=overlaid)
+  plot(ROCit_obj, col = c(colour_id, 1),
+  legend = FALSE, YIndex = FALSE, values = FALSE)
+}
+
+plot_roc(cal_df$predCountry, cal_df[,outcome]) #red
+plot_roc(cal_df$predchannel_type, cal_df[,outcome], colour_id=3, overlaid=T) # green
+```
+
+Unsurprisingly the ROC curve for predCountry performs better than predchannel_type.
+
+### Numerical single variables
+
+To make use of the mKpredC function for numerical single variate analysis we bin all the numerical variables into classes of 10 and calculate predictions and AUC values.
+
+```{r num single function}
+# Binning numerical vars and calling mkPredC
+
+mkPredN <- function(outCol, varCol, appCol) {
+  # compute the cuts
+  cuts <- unique(
+  quantile(varCol, probs=seq(0, 1, 0.1), na.rm=T))
+  # discretize the numerical columns
+  varC <- cut(varCol,cuts)
+  appC <- cut(appCol,cuts)
+  mkPredC(outCol,varC,appC)
+}
+```
+
+```{r num run}
+for(v in numericVars) {
+  pi <- paste('pred', v, sep='')
+  train_df[,pi] <- mkPredN(train_df[,outcome], train_df[,v], train_df[,v])
+  cal_df[,pi] <- mkPredN(train_df[,outcome], train_df[,v], cal_df[,v])
+  test_df[,pi] <- mkPredN(train_df[,outcome], train_df[,v], test_df[,v])
+  aucTrain <- calcAUC(train_df[,pi], train_df[,outcome])
+  if(aucTrain >= 0.55) {
+    aucCal <- calcAUC(cal_df[,pi], cal_df[,outcome])
+    print(sprintf("%s: trainAUC: %4.3f; calibrationAUC: %4.3f",
+    pi, aucTrain, aucCal))
+  }
+}
+```
+
+```{r}
+for(v in numericVars) {
+  pi <- paste('pred', v, sep='')
+  train_df[,pi] <- mkPredN(train_df[,outcome], train_df[,v], train_df[,v])
+  cal_df[,pi] <- mkPredN(train_df[,outcome], train_df[,v], cal_df[,v])
+  test_df[,pi] <- mkPredN(train_df[,outcome], train_df[,v], test_df[,v])
+  aucTrain <- calcAUC(train_df[,pi], train_df[,outcome])
+  if(aucTrain >= 0.55) {
+    aucTest <- calcAUC(test_df[,pi], test_df[,outcome])
+    
+    Variables <- c(Variables, v)
+    AUC_Test <- c(AUC_Test, round(aucTest, 3))
+  }
+}
+
+test_AUC_df <- cbind(Variables, AUC_Test)
+test_AUC_df <- as.data.frame(test_AUC_df)
+test_AUC_df <- test_AUC_df[order(test_AUC_df$AUC_Test, decreasing = TRUE), ]
+test_AUC_df
+```
+
+We find a few real strong predictors in the numerical variable list. The "predvideo_views_for_the_last_30_days" scores a calibration AUC of 0.851 
+ 
+```{r}
+fig1 <- ggplot(cal_df) + geom_density(aes(x=subscribers_for_last_30_days, color=as.factor(earnings_level)))
+fig2 <- ggplot(cal_df) + geom_density(aes(x=predvideo_views_for_the_last_30_days, color=as.factor(earnings_level)))
+grid.arrange(fig1, fig2, ncol=2)
+```
+
+We can clearly see a huge leap in outcome of 1s corresponding to very high values of predvideo_views_for_the_last_30_days. 
+
+```{r}
+plot_roc(test_df$video_views, test_df[,outcome]) #red
+plot_roc(test_df$predvideo_views_for_the_last_30_days, test_df[,outcome], colour_id=3, overlaid=T) #green
+```
+
+The ROC curve for predvideo_views_for_the_last_30_days seems almost perfect.
+
+```{r}
+# House keeping
+
+rm(aucCal, aucTrain, fig1, fig2, pi, result, v)
+```
+
+### Null Model and Evaluation Metrics
+
+Lets create the Null model to be one that predicts 1 as outcome irrespective of the input.
+
+```{r null model}
+(Npos <- sum(train_df[,outcome] == 0))
+
+pred.Null <- Npos / nrow(train_df)
+cat("Proportion of outcome == 1 in dTrain:", pred.Null)
+```
+
+The model returns a strong 0.79 score primarily due to the higher proportion of 1s in the outcome column of the data set
+
+```{r NuLL model performance}
+TP <- 0; TN <- sum(cal_df[,outcome] == 0); # using threshold 0.5
+FP <- 0; FN <- sum(cal_df[,outcome] == 1); # using threshold 0.5
+cat("nrow(dCal):", nrow(cal_df), "TP:", TP, "TN:", TN, "FP:", FP, "FN:", FN)
+
+(accuracy <- (TP + TN) / nrow(cal_df))
+
+(precision <- TP/(TP + FP))
+
+(recall <- TP/(TP + FN))
+
+pred.Null <- rep(pred.Null, nrow(cal_df))
+(AUC <- calcAUC(pred.Null, cal_df[,outcome]))
+```
+
+## 2.A.2 Log Likelihood and Deviance [Feature Selection #2]
+
+```{r log likelihoood}
+# Define a function to compute log likelihood so that we can reuse it.
+logLikelihood <- function(ytrue, ypred, epsilon=1e-6) {
+  sum(ifelse(ytrue==pos, log(ypred+epsilon), log(1-ypred-epsilon)), na.rm=T)
+}
+# Compute the likelihood of the Null model on the calibration
+# set (for the KDD dataset from previous lecture)
+logNull <- logLikelihood(cal_df[,outcome], sum(cal_df[,outcome]==pos)/nrow(cal_df))
+
+cat(logNull)
+```
+
+We have our Null model log likelihood to compare to all other multivariate models.
+
+### Categorical feature selection with Deviance
+
+```{r cat vars deviance}
+deviance_sel <- c()
+
+minDrop <- 0 # may need to adjust this number
+for (v in catVars) {
+  pi <- paste('pred', v, sep='')
+  devDrop <- 2*(logLikelihood(cal_df[,outcome], cal_df[,pi]) - logNull)
+  if (devDrop <= minDrop) {
+    print(sprintf("%s, deviance reduction: %g", pi, devDrop))
+    deviance_sel <- c(deviance_sel, pi)
+  }
+}
+```
+
+```{r num var deviance}
+minDrop <- 0 # may need to adjust this number
+for (v in numericVars) {
+  pi <- paste('pred', v, sep='')
+  devDrop <- 2*(logLikelihood(cal_df[,outcome], cal_df[,pi]) - logNull)
+  if (devDrop <= minDrop) {
+    print(sprintf("%s, deviance reduction: %g", pi, devDrop))
+    deviance_sel <- c(deviance_sel, pi)
+  }
+}
+```
+
+Evaluvating the deviance score of all variables
+
+```{r}
+# Initialize empty vectors to store results
+Variables <- character(0)
+Deviance_Test <- numeric(0)
+
+minDrop <- 100 # may need to adjust this number
+for (v in catVars) {
+  pi <- paste('pred', v, sep='')
+  devDrop <- 2*(logLikelihood(test_df[,outcome], test_df[,pi]) - logNull)
+  if (devDrop <= minDrop) {
+    
+    Variables <- c(Variables, v)
+    Deviance_Test <- c(Deviance_Test, round(devDrop, 3))
+  }
+}
+
+for (v in numericVars) {
+  pi <- paste('pred', v, sep='')
+  devDrop <- 2*(logLikelihood(test_df[,outcome], test_df[,pi]) - logNull)
+  if (devDrop <= minDrop) {
+    Variables <- c(Variables, v)
+    Deviance_Test <- c(Deviance_Test, round(devDrop, 3))
+  
+  }
+}
+
+test_dev_df <- cbind(Variables, Deviance_Test)
+test_dev_df <- as.data.frame(test_dev_df)
+test_dev_df <- test_dev_df[order(abs(as.numeric(test_dev_df$Deviance_Test))), ]
+test_dev_df
+
+```
+
+We have a subset of 6 variables selected using their deviance scores. 
+
+Creating a new data frame with suffix _dev to be used in multivariate modelling.
+
+```{r}
+train_dev <- train_df[, c(deviance_sel, outcome)]
+test_dev <- test_df[, c(deviance_sel, outcome)]
+cal_dev <- cal_df[, c(deviance_sel, outcome)]
+```
+
+```{r}
+# House keeping
+
+rm(accuracy, AUC, devDrop, FN, FP, logNull, minDrop, Npos, precision, 
+   pred.Null, recall, TN, TP, v)
+```
+
+## 2.A.3. Information Gain [Feature Selection #3]  (Jette, 2019)
+
+Our second technique for feature selection is information gain. Information gain can be calculated by evaluating the gain of each variable in the context of the target variable.Here the calculation is referred to as mutual information between the two random variables.Information Gain, or IG for short, measures the reduction in entropy or surprise by splitting a data set according to a given value of a random variable. Information gain is calculated by comparing the entropy of the data set before and after a transformation.
+
+```{r  Entropy Calculation}
+
+entropy <- function(target) {
+  freq <- table(target)/length(target)
+  # vectorize
+  vec <- as.data.frame(freq)[,2]
+  #dropping 0 to avoid NaN resulting from log2
+  vec<-vec[vec>0]
+  #compute entropy
+  -sum(vec * log2(vec))
+}
+
+entropy(training_prepared$earnings_level)   # just for example
+
+```
+
+### Information Gain for Numerical Variables Only
+
+```{r Returns IG for numeric variables}
+
+IG_numeric<-function(data, feature, target, bins=4) {
+  #Strip out rows where feature is NA
+  data<-data[!is.na(data[,feature]),]
+  #compute entropy for the parent
+  e0<-entropy(data[,target])
+  
+  data$cat<-cut(data[,feature], breaks=bins, labels=c(1:bins))
+  
+  #use dplyr to compute e and p for each value of the feature
+  dd_data <- data %>% group_by(cat) %>% summarise(e=entropy(get(target)), 
+                 n=length(get(target)),
+                 min=min(get(feature)),
+                 max=max(get(feature))
+                 )
+  
+  #calculate p for each value of feature
+  dd_data$p<-dd_data$n/nrow(data)
+  #compute IG
+  IG<-e0-sum(dd_data$p*dd_data$e)
+  
+  return(IG)
+}
+```
+
+```{r Calculating IG}
+
+cal_IG <- function(features, dataset) {
+  n <- length(features)
+  col_name <- vector("character", n)
+  ig <- vector("numeric", n)
+  for (i in 1:n) {
+    col_name[i] <- names(features)[i]
+    ig[i] <- IG_numeric(dataset, names(features)[i], "earnings_level", bins = 4)                                                               }
+  ig_df <- cbind(col_name, "Information Gain" = round(ig, 5))
+  ig_df <- as.data.frame(ig_df)
+  df_sorted <- ig_df[order(ig_df[, 2], decreasing = TRUE), ]
+  return(df_sorted)
+}
+```
+
+```{r}
+features <- training_prepared[,!(names(training_prepared) %in% c("Country", "channel_type", "earnings_level"))]
+df_IG <- cal_IG(features, training_prepared)
+df_IG
+```
+
+
+```{r}
+features <- cat_encod[,!(names(cat_encod) %in% c("earnings_level"))]
+ig_org_sel_df <- cal_IG(features, cat_encod)
+ig_selc_features <- ig_org_sel_df$col_name[1:5]
+```
+
+```{r IG selected data frames}
+enc_result <- train_splitter(cat_encod, 0.9)
+
+train_enc <- enc_result[[1]]
+test_enc <- enc_result[[2]]
+cal_enc <- enc_result[[3]]
+```
+So since here we have calculated information gain for numeric variables only, so it has been applied to all 8 numeric variables in our data frame and we can see that the most important feature for predicting target variable is "video_views_for_the last_30_days" and the least important one is "subscribers". And we have chosen a subset of top five variables out of this list sorted in decreasing order of IG value. 
+
+
+### Information Gain for Catergorical Variables Only
+
+```{r}
+#returns IG for categorical variables.
+IG_cat<-function(data,feature,target){
+  #Strip out rows where feature is NA
+  data<-data[!is.na(data[,feature]),] 
+  #use dplyr to compute e and p for each value of the feature
+  dd_data <- data %>% group_by_at(feature) %>% summarise(e=entropy(get(target)), 
+                 n=length(get(target))
+                 )
+  
+  #compute entropy for the parent
+  e0<-entropy(data[,target])
+  #calculate p for each value of feature
+  dd_data$p<-dd_data$n/nrow(data)
+  #compute IG
+  IG<-e0-sum(dd_data$p*dd_data$e)
+  
+  return(IG)
+}
+```
+
+
+```{r}
+IG_Country <- IG_cat(training_prepared,"Country", "earnings_level")
+IG_Channel_type <- IG_cat(training_prepared,"channel_type", "earnings_level")
+IG_Country
+IG_Channel_type
+```
+As we can make out clearly that both our categorical variables "Country" and "channel_type" are important for predicting the target variable, so we would be holding onto both of them in our final subset.
+
+```{r}
+# House keeping
+
+rm(enc_result, IG_Channel_type, IG_Country, ig_org_sel_df)
+```
+
+# Part 2(B) Multi-variate Classification Models
+
+Defining functions that will calculate accuracy, precision, recall and F1 for the models we create.
+
+```{r}
+performanceMeasures <- function(ytrue, ypred, 
+                                model.name = "model", threshold=0.5) {
+  # compute the normalised deviance
+  dev.norm <- -2 * logLikelihood(ytrue, ypred)/length(ypred)
+  # compute the confusion matrix
+  cmat <- table(actual = ytrue, predicted = ypred >= threshold)
+  accuracy <- sum(diag(cmat)) / sum(cmat)
+  precision <- cmat[2, 2] / sum(cmat[, 2])
+  recall <- cmat[2, 2] / sum(cmat[2, ])
+  f1 <- 2 * precision * recall / (precision + recall)
+  
+  data.frame(model = model.name, precision = precision,recall = recall, 
+             f1 = f1, dev.norm = dev.norm)
+}
+```
+
+```{r}
+panderOpt <- function(){
+  # setting up Pander Options
+  panderOptions("plain.ascii", TRUE)
+  panderOptions("keep.trailing.zeros", TRUE)
+  panderOptions("table.style", "simple")
+}
+```
+
+```{r}
+pretty_perf_table <- function(model, xtrain, ytrain, xtest, ytest, m = 0, threshold = 0.5, title = "Performance Table") {
+  # Option setting for Pander
+  panderOpt()
+  perf_justify <- "lrrrr"
+  
+  # Create the title line
+  cat(paste0("## ", title, "\n"))
+  
+  if (m == 1) {
+    # comparing performance on training vs. test
+    trainperf_df <- performanceMeasures(
+      xtrain, ytrain, model.name = "training", threshold = threshold)
+    testperf_df <- performanceMeasures(
+      xtest, ytest, model.name = "test", threshold = threshold)
+    # combine the two performance data frames using rbind()
+    perftable <- rbind(trainperf_df, testperf_df)
+    pandoc.table(perftable, justify = perf_justify)
+  } else {
+    # call the predict() function to do the predictions
+    pred_train <- predict(model, newdata = xtrain)
+    pred_test <- predict(model, newdata = xtest)
+    # comparing performance on training vs. test
+    trainperf_df <- performanceMeasures(
+      ytrain, pred_train, model.name = "training", threshold = threshold)
+    testperf_df <- performanceMeasures(
+      ytest, pred_test, model.name = "test", threshold = threshold)
+    # combine the two performance data frames using rbind()
+    perftable <- rbind(trainperf_df, testperf_df)
+    pandoc.table(perftable, justify = perf_justify)
+  }
+}
+
+```
+
+#2.B.1 Decison Tree Model [Multi-variate Classification Model #1]
+
+We are trying out three different Decision Tree model, one with all the numerical variables as features, second with features selected with deviance score and third being the features selected using Information Gain.
+
+```{r Decision Tree Model}
+fV_all <- paste(outcome,' ~ ', paste(c(numericVars), collapse=' + '), sep='')
+fV_dev <- paste(outcome,' ~ ', paste(c(deviance_sel), collapse=' + '), sep='')
+fV_ig <- paste(outcome,' ~ ', paste(c(ig_selc_features), collapse=' + '), sep='')
+
+dt_model_all <- rpart(fV_all, data = train_df[,c(numericVars, outcome)])
+dt_model_dev <- rpart(fV_dev, data = train_dev)
+dt_model_ig <- rpart(fV_ig, data = train_enc)
+```
+
+```{r dt auc}
+all_dt_auc <- data.frame(model = "all_dt_auc", 
+             train = calcAUC(predict(dt_model_all, newdata=train_df[,numericVars]), train_df[,outcome]),
+             test = calcAUC(predict(dt_model_all, newdata=test_df[,numericVars]), test_df[,outcome]), 
+             cal = calcAUC(predict(dt_model_all, newdata=cal_df[,numericVars]), cal_df[,outcome]))
+
+dev_dt_auc <- data.frame(model = "dev_dt_auc", 
+             train = calcAUC(predict(dt_model_dev, newdata=train_dev), train_dev[,outcome]),
+             test = calcAUC(predict(dt_model_dev, newdata=test_dev), test_dev[,outcome]), 
+             cal = calcAUC(predict(dt_model_dev, newdata=cal_dev), cal_dev[,outcome]))
+
+ig_dt_auc <- data.frame(model = "ig_dt_auc", 
+             train = calcAUC(predict(dt_model_ig, newdata=train_enc), train_enc[,outcome]),
+             test = calcAUC(predict(dt_model_ig, newdata=test_enc), test_enc[,outcome]), 
+             cal = calcAUC(predict(dt_model_ig, newdata=cal_enc), cal_enc[,outcome]))
+
+perftable <- rbind(all_dt_auc, dev_dt_auc, ig_dt_auc)
+cat("AUC for all three feature subsets using decision tree model")
+pandoc.table(perftable, justify = "lrrr")
+```
+
+The auc scores for the model that considers all variables selected after correlation coefficient matrix comes highest. This is followed by the model trained on the IG selected features. This is kind of expected as the logic used by the IG feature selection closely resembles the logic employed by Decision Tress in ranking the importance of each of the factors in the model.
+
+```{r coef vars}
+pretty_perf_table(dt_model_all, train_df[numericVars], train_df[,outcome]==pos, 
+                  test_df[numericVars], test_df[,outcome]==pos, title = "DT Model - all features")
+```
+
+```{r dev metrics}
+pretty_perf_table(dt_model_dev, train_dev[deviance_sel], train_dev[,outcome]==pos, 
+                  test_dev[deviance_sel], test_dev[,outcome]==pos, title = "DT Model - dev features")
+```
+
+```{r ig metrics}
+pretty_perf_table(dt_model_ig, train_enc[ig_selc_features], train_enc[,outcome]==pos, 
+                  test_enc[ig_selc_features], test_enc[,outcome]==pos, title = "DT Model - IG features")
+```
+
+## Selection of Evaluation Metric
+
+Looking at all the performance metrics we have obtained for the model, emphasis is given to the F1 score over all others. Since we have an imbalanced data set we need to strike a balance between type 1 and type 2 errors as the intrinsic imbalance of the data set
+itself can skew the balance in a direction. This coupled with the fact that neither False Positives nor False Negatives are a higher implications to our decision (ie both are equally undesirable in this case) we go for the F1 score which provides us the balanced trade off between precision and recall.
+
+Using that metric we can once again see that the model with all the variables selected performs better. This is followed by IG selected feature model and finally the deviance feature set.
+
+```{r dev rpart 1}
+par(cex=1)
+rpart.plot(dt_model_all)
+```
+
+Video views of the last 30 days plays the biggest role in sub setting the data set by becoming the root node. This falls in line with the initial probabilistic scores for the single variate models where we saw the same variable performing exceptionally. This is followed by subscriber for last 30 days and uploads. After uploads we see videos views for the last 30 days come back again to offer a split at a different value to completely classify the data set. We also see a pattern in the decision tree wherein the negation of the condition at each level leads the side being classified as 0 or low earning. This shows that lower values of these variables usually corresponded to low earnings.
+
+```{r dev rpart 2}
+par(cex=1)
+rpart.plot(dt_model_dev)
+```
+
+Unlike our last model the feature set filled the pred value of each variable seems to grow the decision tree in a more random pattern. We could therefore infer that there might be a lesser correlation between the numerical value of the variable and the earnings level we are trying to predict. This might also explain the slight lower performance this model showcased in the models above.
+
+```{r IG rpart}
+par(cex=1)
+rpart.plot(dt_model_ig)
+```
+
+The IG selected features also allows for a more structured growth of the tree as we saw with the model that was trained on all the variables. 
+
+```{r dt roc}
+plot_roc <- function(predcol1, outcol1, predcol2, outcol2, a, b){
+  roc_1 <- rocit(score=predcol1, class=outcol1==pos)
+  roc_2 <- rocit(score=predcol2, class=outcol2==pos)
+  plot(roc_1, col = c("blue","green"), lwd = 3,
+  legend = FALSE,YIndex = FALSE, values = TRUE, asp=1)
+  lines(roc_2$TPR ~ roc_2$FPR, lwd = 3,
+  col = c("red","green"), asp=1)
+  legend("bottomright", col = c("blue","red", "green"),
+  c(a, b, "Null Model"), lwd = 2)
+}
+pred_dev_roc <- predict(dt_model_dev, newdata=test_dev)
+pred_ig_roc <- predict(dt_model_ig, newdata=test_enc)
+
+plot_roc(pred_dev_roc, test_dev[[outcome]],
+pred_ig_roc, test_enc[[outcome]], "Deviance Features", "IG features")
+```
+
+From the ROC charts we can see that the model with the deviance feature performs better than model with IG features.
+
+```{r}
+pred_dev_roc <- predict(dt_model_dev, newdata=test_dev)
+pred_all_roc <- predict(dt_model_all, newdata=test_df[numericVars])
+
+plot_roc(pred_dev_roc, test_dev[[outcome]],
+pred_all_roc, test_df[[outcome]], "Deviance Features", "All features")
+```
+
+The test data set with all features fits perfectly despite being a good outcome is a bit too good to be true. A better understanding of how the model actually fits to the data set can only be obtained via a cross validation method.
+
+#2.B.2 k-Nearest Neighbours [Multi-variate Classification Model #2]
+
+Next we implement a k-Nearest Neighbor model on the IG and deviance feature sets
+
+```{r kNN Model}
+knnAUC <- function(train_data, cal_data, test_data,
+                   train_labels, cal_labels, test_labels,
+                   k, features, m = 0) {
+  
+  knnCl <- train_labels == pos
+  
+  knnPredict <- function(df) {
+    knnDecision <- knn(train_data, df, knnCl,
+                       k = k, prob = TRUE)
+    ifelse(knnDecision == TRUE, 
+           attributes(knnDecision)$prob, 
+           1 - attributes(knnDecision)$prob)
+  }
+  
+  cal_data$knnProb <- knnPredict(cal_data[, features])
+  test_data$knnProb <- knnPredict(test_data[, features])
+  train_data$knnProb <- knnPredict(train_data[, features])
+  
+  cal_data$earnings_level <- cal_labels
+  test_data$earnings_level <- test_labels
+  train_data$earnings_level <- train_labels
+  
+  auc_cal <- calcAUC(cal_data$knnProb, cal_labels)
+  auc_test <- calcAUC(test_data$knnProb, test_labels)
+  
+  if(m == 1){
+    return(list(K = k, AUC_cal = auc_cal, AUC_test = auc_test))
+  }else{
+  return(list(cal_data ,test_data, train_data))
+  }
+}
+```
+
+```{r Finding best k dev}
+k_values <- 1:30
+results <- list()
+
+# Perform KNN and AUC calculation for different K values
+for (k in k_values) {
+  result <- knnAUC(train_df[, deviance_sel], cal_dev,
+                   test_dev, train_dev[, outcome], 
+                   cal_dev[, outcome], test_dev[, outcome],
+                   k, deviance_sel, 1)
+  results[[as.character(k)]] <- unlist(result)
+}
+
+  # Convert results to a data frame
+  results_df <- do.call(rbind, results)
+  results_df <- as.data.frame(results_df)
+
+  # Find the K value with the highest AUC on the validation set
+  best_k_dev <- results_df[which.max(results_df$AUC_cal), "K"]
+ 
+  cat("The best K value on deviance features is:", best_k_dev, "\n")
+  cat("AUC on the test set for the best K:",
+      results_df[which.max(results_df$AUC_cal), "AUC_test"])
+```
+
+```{r Finding best k ig}
+k_values <- 1:30
+results <- list()
+
+# Perform KNN and AUC calculation for different K values
+for (k in k_values) {
+  result <- knnAUC(train_enc[, ig_selc_features], cal_enc,
+                   test_enc, train_enc[, outcome], 
+                   cal_enc[, outcome], test_enc[, outcome],
+                   k, ig_selc_features, 1)
+  results[[as.character(k)]] <- unlist(result)
+}
+
+  # Convert results to a data frame
+  results_df <- do.call(rbind, results)
+  results_df <- as.data.frame(results_df)
+
+  # Find the K value with the highest AUC on the validation set
+  best_k_ig <- results_df[which.max(results_df$AUC_cal), "K"]
+ 
+  cat("The best K value on IG features is:", best_k_ig, "\n")
+  cat("AUC on the test set for the best K:",
+      results_df[which.max(results_df$AUC_cal), "AUC_test"])
+```
+
+Using AUC as the metric found the best K value for the kNN model for both IG and deviance feature sets by validating against the calibration set. The values for both models being higher than 3 and lower than 10 suggest low risk of over fitting and under fitting respectively. We will have to now conduct predictions on the test data set before we can draw conclusions. Let us fit both models to their optimum value of k to derive models for testing. 
+
+```{r Best dev k model}
+result <- knnAUC(train_df[, deviance_sel], cal_dev, 
+                 test_dev, train_dev[, outcome], 
+                 cal_dev[, outcome], test_dev[, outcome],
+                 best_k_dev, deviance_sel)
+
+knn_cal_dev <- result[[1]]
+knn_test_dev <- result[[2]]
+knn_train_dev <- result[[3]]
+```
+
+```{r Best dev ig model}
+result <- knnAUC(train_enc[, ig_selc_features], cal_enc, 
+                 test_enc, train_enc[, outcome], 
+                 cal_enc[, outcome], test_enc[, outcome],
+                 best_k_ig, ig_selc_features)
+
+knn_cal_ig <- result[[1]]
+knn_test_ig <- result[[2]]
+knn_train_ig <- result[[3]]
+```
+
+```{r dev Double Density Plot}
+ggplot(data=knn_cal_dev) + geom_density(aes(x=knnProb, 
+                                        color=as.factor(earnings_level),
+                                        linetype=as.factor(earnings_level))) +
+    theme(text=element_text(size=20)) + ggtitle("Devicance features plot")
+```
+
+```{r IG Double Density Plot}
+ggplot(data=knn_cal_ig) + geom_density(aes(x=knnProb, 
+                                        color=as.factor(earnings_level),
+                                        linetype=as.factor(earnings_level))) +
+    theme(text=element_text(size=20)) + ggtitle("IG features plot")
+```
+
+We can see for the kNN model with IG features that a kNNProb value of near 0.75 marks a clear distinction in the density of 1s in earning_level. We can therefore easily set the threshold for prediction to be 0.75 for the IG features model to see if we obtain the best results leaving the deviance feature model at 0.5.
+
+```{r}
+plotROC <- function(ypred, ytrue, titleString="ROC plot") {
+  perf <- performance(prediction(ypred, ytrue), 'tpr', 'fpr')
+  pf <- data.frame(FalsePositiveRate=perf@x.values[[1]],
+  TruePositiveRate=perf@y.values[[1]])
+  ggplot() + geom_line(data=pf, aes(x=FalsePositiveRate, y=TruePositiveRate),
+  colour="red") +
+  labs(title=titleString) +
+  geom_line(aes(x=c(0,1), y=c(0,1))) +
+  theme(text=element_text(size=24))
+}
+```
+
+```{r}
+plot_roc(knn_test_dev$knnProb, knn_test_dev[[outcome]],
+knn_test_ig$knnProb, knn_test_ig[[outcome]], "Deviance Features", "IG features")
+```
+
+### Dev feature model without threshold
+
+```{r}
+pretty_perf_table(NULL, knn_train_dev[,outcome] == 1, knn_train_dev$knnProb, 
+                  knn_test_dev[,outcome] ==1, knn_test_dev$knnProb, 1, title = "kNN Model - dev features")
+```
+### IG feature model with threshold
+
+```{r}
+pretty_perf_table(NULL, knn_train_ig[,outcome] == 1, knn_train_ig$knnProb, 
+                  knn_test_ig[,outcome] ==1, knn_test_ig$knnProb, 1, 0.8, title = "kNN Model - IG features with threshold")
+```
+### IG feature model without threshold
+
+```{r}
+pretty_perf_table(NULL, knn_train_ig[,outcome] == 1, knn_train_ig$knnProb, 
+                  knn_test_ig[,outcome] ==1, knn_test_ig$knnProb, 1, title = "kNN Model - IG features")
+```
+The IG feature model predicted the same with the artificial threshold when compared to prediction made at 0.5 threshold. Another look at the double density plot shows how the small values of 0s and 1s on both side of the threshold eventually adds up to negate any benefit we thought we might have keeping the threshold very close to the start of the peak of 1s density. Incidentally we can see that the precision improved marginally on the case with threshold indicating a drop in false positive which is exactly what we expect.
+
+# Classification : Results Discussion
+
+```{r kNN ig set}
+pretty_perf_table(NULL, knn_train_ig[,outcome] == 1, knn_train_ig$knnProb, 
+                  knn_test_ig[,outcome] ==1, knn_test_ig$knnProb, 1, title = "kNN Model - IG features")
+```
+
+```{r dt ig set}
+pretty_perf_table(dt_model_ig, train_enc[ig_selc_features], train_enc[,outcome]==pos, 
+                  test_enc[ig_selc_features], test_enc[,outcome]==pos, title = "DT Model - IG features")
+```
+Looking at all four models we have created two decision trees and two kNN models our major findings are as follows: 
+
+1. In both case the models trained on the IG feature set faired better than the deviance data set counterparts.
+2. The decision tree results are more interpretable and explainable giving us more trust in the decisions.
+3. All multivariate models constructed performed way better than the best single variate model and the Null model
+
+Comparing the two models both on the IG feature set, the difference in F1 performance is marginal, but the deviance score is found to be better for the kNN model. But given the metrics and the fact the DT model is more interpretable we conclude that the DT model is better than the kNN model for the given data set.
+
+
+
+
+# Part 3 : Kmeans Clustering
+
+## Selecting clustering tecnique: Why Kmeans?
+
+K-means and hierarchical clustering are both popular unsupervised machine learning techniques used for clustering.Although each approach has its own advantages and is suitable for different types of data and scenarios, Kmeans is based on Euclidean distance which works well for numerical variables. Since our data set is a mix of numerical and categorical variables, and we have converted categorical to numerical during classification task, so we can easily run it through kmeans method. Kmeans is preferred over Hierarchical because its computationally faster, its easy to implement and understand, and has clear boundaries between clusters. 
+
+It classifies objects in multiple groups (i.e., clusters), such that objects within the same cluster are as similar as possible (i.e., high intra-class similarity), whereas objects from different clusters are as dissimilar as possible (i.e., low inter-class similarity). In k-means clustering, each cluster is represented by its center (i.e, centroid) which corresponds to the mean of points assigned to the cluster.The basic idea behind k-means clustering consists of defining clusters so that the total intra-cluster variation (known as total within-cluster variation) is minimized.Each observation is assigned to a given cluster such that the sum of squares (SS) distance of the observation to their assigned cluster centers is minimized.The total within-cluster sum of square measures the compactness (i.e goodness) of the clustering and we want it to be as small as possible.
+
+## Selecting features for clustering.
+
+### Feature Combination 1
+So we have selected a total of eight numerical features from the output obtained using Information Gain and Log Likelihood feature selection methods as shown in Part 2. These are "subscribers","video_views","uploads", "video_views_for_the_last_30_days", "subscribers_for_last_30_days", "Population", "Aggregated_GDP",       "channel_lifetime", "avg_earnings". And since this technique works with numerical data only, so we can represent our two categorical variables "Country" with "Aggregated_GDP" and "channel_type" with "avg_earnings". Hence we have added avg_earnings to our eight features and it makes a total of nine features which we are using in implementation of kmeans algorithm. As far as data preparation for clustering is concerned, we have used scale () function to bring all the variables centered around mean as "0" and standard deviation as "1".
+
+### Feature Combination #2
+For experimenting purposes only we have selected ten features, all numerical values obtained consistently as an output from mkPredC and mkPredN functions,(i.e. derived from the target variable) i.e."predCountry", "predchannel_type", "predsubscribers", "predvideo_views", "preduploads","predvideo_views_for_the_last_30_days", "predsubscribers_for_last_30_days", "predPopulation", "predAggregated_GDP", "predchannel_lifetime".No scaling is required for them since they are all representing proportions between 0 and 1.
+
+```{r Data Prep For Kmeans, echo=TRUE}
+
+vars_to_drop <- c("Country", "channel_type","earnings_level")      #for feature combination #1
+
+vars_to_select <- c("predCountry", "predchannel_type", "predsubscribers", "predvideo_views", "preduploads", "predvideo_views_for_the_last_30_days", "predsubscribers_for_last_30_days", "predPopulation", "predAggregated_GDP", "predchannel_lifetime")     #for feature combination #2
+
+clust_df <- training_prepared[, !(names(training_prepared) %in% vars_to_drop)]
+
+combined_df_pred <- rbind(train_df,test_df, cal_df)
+clust_df_pred <- combined_df_pred[, (names(combined_df_pred) %in% vars_to_select)]
+
+clust_df$avg_earnings <- vtreat_prepared$avg_earnings
+
+clust_df$ID <- seq.int(nrow(clust_df))
+clust_df1 <- subset(clust_df, select = -ID)
+
+clust_df_pred$ID <- seq.int(nrow(clust_df_pred))
+clust_df_pred1 <- subset(clust_df_pred, select = -ID)
+
+
+# Scaling the selected columns
+scaled_df <- scale(clust_df1) 
+
+# Checking the structure of 'scaled_df'
+attributes(scaled_df)$`scaled:center`
+attributes(scaled_df)$`scaled:scale`
+
+```
+
+## Initial number of clusters (arbitrarily chosen) = 5
+
+```{r echo=TRUE}
+kbest.p <- 5
+# running kmeans with 4 clusters, 100 random starts, and 100 maximum iterations per run.
+kmClusters <- kmeans(scaled_df, kbest.p, nstart=100, iter.max=100)
+kmClusters$size
+kmClusters$centers
+fviz_cluster(kmClusters, data = scaled_df)
+```
+
+## Finding optimal  number of clusters
+
+So here we are computing k-means for different number of clusters to further compare their plots.
+
+```{r}
+k2 <- kmeans(scaled_df, centers = 2, nstart = 100, iter.max=100)
+k3 <- kmeans(scaled_df, centers = 3, nstart = 100, iter.max=100)
+k4 <- kmeans(scaled_df, centers = 4, nstart = 100, iter.max=100)
+k5 <- kmeans(scaled_df, centers = 5, nstart = 100, iter.max=100)
+
+# plots to compare
+p2 <- fviz_cluster(k2, geom = "point", data = scaled_df) + ggtitle("k = 2")
+p3 <- fviz_cluster(k3, geom = "point",  data = scaled_df) + ggtitle("k = 3")
+p4 <- fviz_cluster(k4, geom = "point",  data = scaled_df) + ggtitle("k = 4")
+p5 <- fviz_cluster(k5, geom = "point",  data = scaled_df) + ggtitle("k = 5")
+
+
+grid.arrange(p2, p3, p4, p5, nrow = 2)
+```
+
+## Three techniques to find optimal number of clusters (Boehmke,2018)
+
+
+So we have used CH (Calinski-Harabasz) index, Elbow method and Average Silhouette Width (ASW) method to find optimal number of clusters.
+
+```{r Optimal Clusters}
+
+set.seed(65496)
+
+#CH_Index
+kmClustering.ch <- kmeansruns(scaled_df, krange=1:10, criterion="ch")
+kmClustering.ch$bestk
+
+cat("K\tCH_Index\n")
+for (i in 1:10) {
+  cat(paste(i, "\t", kmClustering.ch$crit[i], "\n" ))
+}
+
+#Elbow Method
+fviz_nbclust(scaled_df, kmeans, method = "wss")
+
+#ASW Method
+fviz_nbclust(scaled_df, kmeans, method = "silhouette")
+
+```
+
+#Interpretation of Output of three techniques :
+
+1. CH_Index.  Higher values of the CH index suggest better-defined and more separated clusters, so optimal number of clusters as per highest CH_index ( 212.376307915408 ) is 2.
+
+2. Elbow Method.  From the plot we can see that at k=2 the total WSS has the highest value, so optimal number of clusters is 2.
+
+3. ASW Method.  From the plot we can see that at k=2, we get the highest ASW value, so the optimal number of clusters is 2.
+
+So all three techniques suggest optimal number of clusters as 2. Let's have a detailed look at cluster statistics for k=2.
+
+```{r}
+k2
+p2
+```
+
+
+So if we look at the output above, cluster 1 has 889 observations and cluster 2 has 106 observations and within cluster SS distances are large, i.e.cluster1 = 868.904 and for cluster 2= 5500.892, which indicates clusters are not compact. Also, in the context of the within-cluster sum of squares (WCSS) and the between-cluster sum of squares (BCSS) ratio which is 17.6% here, indicates that only 17.6% of the total variation in the data is explained by the differences between the clusters, while the remaining percentage (100% - 17.6% = 82.4%) represents the within-cluster variation.Hence, we can conclude that k=2 is not optimum value of k for our data set. Generally it is a trade off between optimal number of clusters and meaningful information extracted out of clustering. Since a partition of data set into two clusters does not make any sense here with respect to high and low earnings, we will choose k=4 as optimal number of clusters as k=4 shows a reasonable value for CH_Index (196.510940699739 ), k=4 is the bend of the elbow in Elbow Method plot and k=4 is local maxima in ASW plot.
+
+
+```{r}
+k4
+p4
+```
+
+
+So as we can see, though the for k = 4, WSS for 4 clusters is : 2422.34254, 78.78635, 1016.91043, 2091.13619. Except for cluster#2, for other 3 clusters these WSS distances are huge, indicating that this is not an ideal situation. Also , Also, in the context of the within-cluster sum of squares (WCSS) and the between-cluster sum of squares (BCSS) ratio which is 37.3%, is not so great, although better than k=2. Since, we have to choose a reasonable number of clusters not compromising much on WSS, but at the same time having meaningful grouping, hence we choose k=4 as optimum number of clusters.
+
+
+## Clustering for optimal k=4 for feature combination #2
+
+Now since we have decided on optimal number of clusters as k=4, we are experimenting by changing our input as feature combination #2 (all features represented in terms of log-likelihood aligned for predicting target variable)
+
+```{r}
+k_pred <- kmeans(clust_df_pred1, centers = 4, nstart = 100, iter.max=100)
+p_pred <- fviz_cluster(k_pred, geom = "point",  data = clust_df_pred1) + ggtitle("k = 4")
+k_pred
+p_pred
+```
+
+
+## Analysis of Clustering Results for Feature Combination #2
+
+So as we can see from the output, our WSS distances have reduced heavily i.e.  37.27259 24.73394 26.56159 34.51018 for 4 different clusters,which can also be verified by the looking at the plot since the clusters look very compact. For feature combination #1 (for k=4) sizes of 4 clusters were 411, 9, 98, 477, whereas for feature combination #2 (for k=4) the size of 4 clusters are 96, 251, 90, 558, which kind of seems more balanced and well grouped as compared to feature combination #1.Also in the context of the within-cluster sum of squares (WCSS) and the between-cluster sum of squares (BCSS) ratio which is 60.2%, represents that 60.2% of the total variation in the data is explained by the differences between the clusters, while the remaining percentage (100% - 60.2% = 39.8%) represents the within-cluster variation. This is far better than 37.3% in case of Feature combination #1. So we conclude that feature combination #2 works better than #1 for clustering.
+
+## Evaluation of clustering algorithm (Szepannek,2018)
+
+We have selected Rand Index to evaluate the performance of the clustering algorithm and we are using ground truth to compare it with.Rand index= (TP+TN)/(TP+FP+FN+TN). The Rand index value for k=4 is 0.4855, which means that the four clusters have approx 49% overall similarity, which is quite reasonable for the given data set being an imbalanced one.We had 123 observations having NAs across six features, which might create erroneous groupings in during the clustering, impacting the accuracy and reliability of the clustering results.
+
+
+```{r Cluster Similarity, warning=FALSE}
+
+k_test<-kmeans(clust_df_pred1,centers=4, nstart = 100, iter.max=100)
+k_test$size
+cluster_similarity(k_test$cluster,training_prepared$earnings_level,similarity="rand") 
+```
+
+## Clustering for Mixed Data Types - k-prototypes algorithm (Szepannek,2018)
+
+Since Kmeans is best suited with numerical data types only but in practical scenarios we are dealing with mix data types, so we have experimented with new algorithms for clustering mixed-type data based on Huang’s k-prototypes algorithm. The implementation followed here includes our data frame with "Country and "channel_type" categorical variables along with other numerical variables. Also since it is a mixed data type so no scaling is required, but factorization of categorical variables is required.
+
+```{r}
+#No scaling required because of categorical data
+
+vars_to_drop1 <- c("predCountry", "predchannel_type", "predsubscribers", "predvideo_views", "preduploads", "predvideo_views_for_the_last_30_days", "predsubscribers_for_last_30_days", "predPopulation", "predAggregated_GDP", "predchannel_lifetime","earnings_level")
+
+mix_clust_df <- training_prepared[, !(names(training_prepared) %in% vars_to_drop1)]
+mix_clust_df$avg_earnings <- vtreat_prepared$avg_earnings
+mix_clust_df$Country <- factor(training_prepared$Country)
+mix_clust_df$channel_type <- factor(training_prepared$channel_type)
+
+mix_clust_df$ID <- seq.int(nrow(mix_clust_df))
+mix_clust_df1 <- subset(mix_clust_df, select = -ID)
+
+str(mix_clust_df1)
+
+```
+
+# Using kproto method (Szepannek,2018)
+
+```{r}
+k_best <- 4
+kpres<-kproto(x= mix_clust_df1,k=k_best)
+kpres #output1 
+summary(kpres) #output2 
+
+#library(wesanderson) 
+#par(mfrow=c(2,2))
+#clprofiles(kpres,training_prepared,col=wes_palette("Royal1",k_best,type="continuous"))
+
+```
+
+
+Here lambda > 0 is a real valued parameter that controls the trade off between Euclidean distance for numeric variables and simple matching distance for factor variables for cluster assignment. In our case for k=4, lambda = 7.120568e+12 which implies that the categorical features are playing a more significant role in determining the clusters.Consequently, the algorithm tends to form clusters primarily based on the patterns in the categorical data. With such a high lambda value, the algorithm downplays the importance of numerical attributes. This makes sense to say that the categorical attributes are more meaningful (Country and channel_type) or if the numerical attributes are less significant in distinguishing between clusters.
+
+# Comparison of Kproto, Kmeans and Kmodes algorithms based on Rand Index (Szepannek,2018)
+
+```{r}
+kpres<-kproto(x= mix_clust_df1,k=4) ## kproto using mixed datatypes
+kmres<-kmeans(mix_clust_df1[,3:10],4) # kmeans using numerics only
+kmores<-kmodes(mix_clust_df1[,1:2],4) # kmodes using factors only
+
+
+cluster_similarity(kpres$cluster,training_prepared$earnings_level,similarity="rand")
+cluster_similarity(kmres$cluster,training_prepared$earnings_level,similarity="rand") 
+cluster_similarity(kmores$cluster,training_prepared$earnings_level,similarity="rand")
+```
+
+So Rand Index closer to 1 means that the two clusterings are identical, and 0 indicates no similarity between the two clusterings, hence we prefer a value closer to zero. In that way, the ranking of three algorithms in order of performance will be Kmodes, Kmeans and  Kproto. Well, so we establish that kmeans is good for numeric data types only and for mixed data types we should use kproto algorithm.  
+
+
+# References
+
+Szepannek, G.(2018).clustMixType:User-FriendlyClustering of Mixed-Type Data in R.The R Journal Vol. 10/2, December 2018 ISSN         2073-4859
+Boehmke, B.(2018). UC Business Analytics R Programming Guide. https://uc-r.github.io/kmeans_clustering
+
+Yu, Z.(2023, Sep 02). Tutorial: an interactive R shiny app visulaling K-means clustering of the Iris dataset.                         https://rpubs.com/ZixuanYu/iris_kmeans_clustering
+
+Deshpande, R. (2020, May 21). R Shiny App — Creating an App on R shiny and sharing with Shinyapps.io                                  https://medium.com/codex/r-shiny-app-creating-an-app-on-r-shiny-and-sharing-with-shinyapps-io-a6f519c02f48
+   https://ruchideshpande.shinyapps.io/csapp/
+   
+Jette, P. (2019, Jan 02). Entropy, Information Gain, and Data Exploration in R.                                                       https://rstudio-pubs-static.s3.amazonaws.com/455435_30729e265f7a4d049400d03a18e218db.html
+
+
+Brownlee, J. (2020, Dec 10). Information Gain and Mutual Information for Machine Learning. https://machinelearningmastery.com/information-gain-and-mutual-information/
+
+
+Week 10 lab, and lecture slides  from week 4 to week 11 of CITS 4009 for code, and concept.
+
+https://rstudio.github.io/cheatsheets/shiny.pdf
+    for various shiny app elements especially concerning the UI
+    
+https://www.kaggle.com/datasets/nelgiriyewithana/global-youtube-statistics-2023
+    for better understanding of the data set and the features within them.
+    
+https://chat.openai.com/
+    Chat GPTs was used extensively for various purposes. The concept behind code chunks obtained from the lecture was understood by     having GPT explain it line for line, meaning and concept of various models and evaluation metrics were made clearer, complex      function that were very difficult to troubleshoot were fed in to GPT, but the answers were not always clear but it still helped.
+    
+https://cran.r-project.org/manuals.html
+
+https://www.rdocumentation.org/
+
+https://www.r-project.org/other-docs.html
+
+
